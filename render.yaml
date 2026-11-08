@@ -1,0 +1,27 @@
+# Blueprint de Render: servicio web (Express) + base de datos PostgreSQL
+services:
+  - type: web
+    name: calendario-escolar-gestor-actividades
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    # migración y seed son idempotentes: se pueden ejecutar en cada arranque
+    startCommand: npm run setup && npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: calendario-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+
+databases:
+  - name: calendario-db
+    plan: free
+    databaseName: calendario
+    user: calendario
