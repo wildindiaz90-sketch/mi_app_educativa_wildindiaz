@@ -1,170 +1,155 @@
-const router = require('express').Router();
-const { z } = require('zod');
-const pool = require('../db/pool');
-const { requiereAuth, asyncH } = require('../middleware');
+/* Listado de actividades y tareas */
+(async function () {
+  if (!App.initShell()) return;
+  const { esc } = App;
+  const $ = (id) => document.getElementById(id);
+  const qp = new URLSearchParams(location.search);
+  const f = { q: qp.get('q') || '', grupo_id: '', periodo_id: '', area_id: '', tipo: '', estado: '', rango: 'todo', page: 1, limit: 10 };
+  const sel = new Set();
+  let ultimo = null;
 
-router.use(requiereAuth);
-
-const TIPOS = ['tarea', 'proyecto', 'exposicion', 'prueba', 'practica'];
-const ESTADOS = ['pendiente', 'en_curso', 'entregada', 'evaluada'];
-
-const texto = z.string().trim().max(5000).default('');
-const actividadSchema = z.object({
-  titulo: z.string().trim().min(3).max(200),
-  ra: z.string().trim().min(2).max(500),
-  area_id: z.coerce.number().int().positive(),
-  // El grupo se identifica por nivel + grado + sección (se crea si no existe) o por grupo_id
-  grupo_id: z.coerce.number().int().positive().optional(),
-  nivel: z.string().trim().min(1).max(80).optional(),
-  grado: z.string().trim().min(1).max(80).optional(),
-  seccion: z.string().trim().min(1).max(10).optional(),
-  periodo_id: z.coerce.number().int().positive().nullable().optional(),
-  tipo: z.enum(TIPOS).default('tarea'),
-  estado: z.enum(ESTADOS).default('pendiente'),
-  fecha_asignacion: z.string().datetime({ offset: true }),
-  fecha_entrega: z.string().datetime({ offset: true }),
-  puntos: z.coerce.number().min(0).max(100).default(20),
-  momento_inicio: texto,
-  momento_desarrollo: texto,
-  momento_cierre: texto,
-  estrategias: texto,
-  recursos: texto,
-  instrumentos: texto,
-  entregas_recibidas: z.coerce.number().int().min(0).optional(),
-}).refine((d) => d.grupo_id || (d.nivel && d.grado && d.seccion), {
-  message: 'Indique grupo_id o nivel, grado y sección', path: ['grupo_id'],
-}).refine((d) => new Date(d.fecha_entrega) >= new Date(d.fecha_asignacion), {
-  message: 'La fecha de entrega no puede ser anterior a la de asignación', path: ['fecha_entrega'],
-});
-
-const SELECT = `
-  SELECT a.id, a.titulo, a.ra, a.tipo, a.estado, a.puntos::float AS puntos,
-         a.fecha_asignacion, a.fecha_entrega,
-         a.momento_inicio, a.momento_desarrollo, a.momento_cierre,
-         a.estrategias, a.recursos, a.instrumentos, a.entregas_recibidas,
-         a.area_id, ac.nombre AS area,
-         a.grupo_id, g.nivel, g.grado, g.seccion, g.estudiantes,
-         a.periodo_id, p.codigo AS periodo_codigo, p.nombre AS periodo_nombre
-  FROM actividades a
-  JOIN areas_curriculares ac ON ac.id = a.area_id
-  JOIN grupos g ON g.id = a.grupo_id
-  LEFT JOIN periodos p ON p.id = a.periodo_id`;
-
-async function resolverGrupo(client, d) {
-  if (d.grupo_id) return d.grupo_id;
-  const { rows } = await client.query(
-    `INSERT INTO grupos (nivel, grado, seccion) VALUES ($1,$2,$3)
-     ON CONFLICT (nivel, grado, seccion) DO UPDATE SET nivel = EXCLUDED.nivel RETURNING id`,
-    [d.nivel, d.grado, d.seccion]);
-  return rows[0].id;
-}
-
-// Listado con filtros, paginación y conteo por estado
-router.get('/', asyncH(async (req, res) => {
-  const q = req.query;
-  const params = [req.usuario.id];
-  const where = ['a.usuario_id = $1'];
-  const add = (cond, val) => { params.push(val); where.push(cond.replace('?', `$${params.length}`)); };
-
-  if (q.q) {
-    params.push(`%${String(q.q).slice(0, 100)}%`);
-    const n = `$${params.length}`;
-    where.push(`(a.titulo ILIKE ${n} OR a.ra ILIKE ${n} OR ac.nombre ILIKE ${n})`);
+  const cat = await App.catalogos();
+  const hoy = App.hoy();
+  const actual = cat.periodos.find((p) => hoy >= p.fecha_inicio && hoy <= p.fecha_fin);
+  $('f-q').value = f.q;
+  $('f-grupo').innerHTML = '<option value="">Grupo: Todos</option>' + cat.grupos.map((g) => `<option value="${g.id}">${esc(g.grado)} ${esc(g.seccion)} (${g.estudiantes} alumnos)</option>`).join('');
+  $('f-periodo').innerHTML = '<option value="">Período: Todos</option>' + cat.periodos.map((p) => `<option value="${p.id}">${esc(p.anio_escolar)} · ${esc(p.nombre.split(' - ')[0])}</option>`).join('');
+  $('f-areas').innerHTML = ['<button data-area="" class="chip">Todas</button>', ...cat.areas.map((a) => `<button data-area="${a.id}" class="chip">${esc(a.nombre)}</button>`)].join('');
+  if (actual) {
+    document.querySelectorAll('[data-anio]').forEach((el) => (el.textContent = 'Año Escolar ' + actual.anio_escolar));
+    document.querySelectorAll('[data-periodo]').forEach((el) => (el.textContent = 'Período ' + actual.codigo));
+    document.querySelectorAll('[data-periodo-largo]').forEach((el) => (el.textContent = actual.nombre.split(' - ')[0]));
   }
-  if (q.area_id) add('a.area_id = ?', Number(q.area_id));
-  if (q.grupo_id) add('a.grupo_id = ?', Number(q.grupo_id));
-  if (q.periodo_id) add('a.periodo_id = ?', Number(q.periodo_id));
-  if (q.tipo && TIPOS.includes(q.tipo)) add('a.tipo = ?::tipo_actividad', q.tipo);
-  if (q.desde) add('a.fecha_entrega >= ?', q.desde);
-  if (q.hasta) add('a.fecha_entrega < ?::date + 1', q.hasta);
 
-  const whereSinEstado = where.join(' AND ');
-  const paramsSinEstado = [...params];
-  if (q.estado && ESTADOS.includes(q.estado)) add('a.estado = ?::estado_actividad', q.estado);
+  const ON = ['bg-primary', 'text-on-primary', 'font-bold'];
+  function pintarFiltros() {
+    document.querySelectorAll('#f-areas .chip').forEach((b) => {
+      const on = b.dataset.area === String(f.area_id);
+      b.className = 'chip px-2.5 py-1 rounded-full text-label-sm font-label-sm border ' + (on ? 'bg-primary text-on-primary border-primary font-bold' : 'bg-surface-container-lowest text-on-surface-variant border-outline-variant hover:bg-surface-container');
+    });
+    document.querySelectorAll('[data-tipo]').forEach((b) => ON.forEach((c) => b.classList.toggle(c, b.dataset.tipo === f.tipo)));
+    document.querySelectorAll('[data-rango]').forEach((b) => ON.forEach((c) => b.classList.toggle(c, b.dataset.rango === f.rango)));
+    document.querySelectorAll('[data-estado]').forEach((b) => b.classList.toggle('ring-2', b.dataset.estado === f.estado));
+  }
 
-  const limit = Math.min(Math.max(parseInt(q.limit, 10) || 10, 1), 100);
-  const page = Math.max(parseInt(q.page, 10) || 1, 1);
-  const orden = q.orden === 'asc' ? 'ASC' : 'DESC';
+  function rangoFechas() {
+    if (f.rango === 'semana') {
+      const dow = App.parseIso(hoy).getUTCDay();
+      const lunes = App.addDays(hoy, dow === 0 ? -6 : 1 - dow);
+      return { desde: lunes, hasta: App.addDays(lunes, 6) };
+    }
+    if (f.rango === 'mes') return { desde: hoy.slice(0, 8) + '01', hasta: App.toIso(new Date(Date.UTC(+hoy.slice(0, 4), +hoy.slice(5, 7), 0))) };
+    return {};
+  }
 
-  const base = `FROM actividades a JOIN areas_curriculares ac ON ac.id = a.area_id JOIN grupos g ON g.id = a.grupo_id`;
-  const [lista, total, porEstado, kpis] = await Promise.all([
-    pool.query(`${SELECT} WHERE ${where.join(' AND ')} ORDER BY a.fecha_entrega ${orden}, a.id DESC
-                LIMIT ${limit} OFFSET ${(page - 1) * limit}`, params),
-    pool.query(`SELECT COUNT(*)::int AS n ${base} WHERE ${where.join(' AND ')}`, params),
-    pool.query(`SELECT a.estado, COUNT(*)::int AS n ${base} WHERE ${whereSinEstado} GROUP BY a.estado`, paramsSinEstado),
-    pool.query(`SELECT COUNT(*)::int AS total,
-                       COUNT(*) FILTER (WHERE estado = 'en_curso')::int AS en_curso,
-                       COUNT(*) FILTER (WHERE estado IN ('pendiente','en_curso') AND fecha_entrega BETWEEN now() AND now() + interval '7 days')::int AS proximas,
-                       COUNT(*) FILTER (WHERE estado = 'evaluada')::int AS evaluadas
-                FROM actividades WHERE usuario_id = $1`, [req.usuario.id]),
-  ]);
-  const conteos = Object.fromEntries(ESTADOS.map((e) => [e, 0]));
-  porEstado.rows.forEach((r) => { conteos[r.estado] = r.n; });
-  res.json({ items: lista.rows, total: total.rows[0].n, page, limit, conteos, kpis: kpis.rows[0] });
-}));
+  const ESTILO_ESTADO = {
+    pendiente: 'bg-amber-50 text-amber-700 border-amber-200', en_curso: 'bg-blue-50 text-blue-700 border-blue-200',
+    entregada: 'bg-purple-50 text-purple-700 border-purple-200', evaluada: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  };
+  const BARRA = { pendiente: '#D97706', en_curso: '#003876', entregada: '#7C3AED', evaluada: '#059669' };
 
-router.get('/:id', asyncH(async (req, res) => {
-  const { rows } = await pool.query(`${SELECT} WHERE a.id = $1 AND a.usuario_id = $2`, [req.params.id, req.usuario.id]);
-  if (!rows[0]) return res.status(404).json({ error: 'Actividad no encontrada' });
-  res.json(rows[0]);
-}));
+  function fila(a) {
+    const dias = App.diasHasta(a.fecha_entrega);
+    const urgente = ['pendiente', 'en_curso'].includes(a.estado) && dias >= 0 && dias <= 1;
+    const pct = a.estudiantes ? Math.min(100, Math.round((a.entregas_recibidas / a.estudiantes) * 100)) : 0;
+    return `<tr class="hover:bg-surface-container-low transition-colors group">
+      <td class="py-3.5 px-4 text-center"><input type="checkbox" data-id="${a.id}" class="rounded border-outline text-primary h-4 w-4" ${sel.has(a.id) ? 'checked' : ''}/></td>
+      <td class="py-3.5 px-4"><div class="flex flex-col gap-1">
+        <span class="font-semibold text-primary">${esc(a.titulo)}</span>
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <span class="px-2 py-0.5 rounded text-label-sm font-label-sm bg-blue-50 text-blue-800 border border-blue-200">${esc(a.area)}</span>
+          <span class="px-2 py-0.5 rounded text-label-sm font-label-sm bg-surface-container text-on-surface-variant">${esc(a.grado)} ${esc(a.seccion)}</span>
+        </div></div></td>
+      <td class="py-3.5 px-4"><div class="flex items-center gap-1.5 text-on-surface">
+        <span class="material-symbols-outlined text-[18px] text-primary-container">${App.ICONOS_TIPO[a.tipo]}</span>
+        <span class="text-label-md font-label-md">${esc(App.TIPOS[a.tipo])}</span></div></td>
+      <td class="py-3.5 px-4"><div class="flex flex-col">
+        <span class="text-label-sm font-label-sm text-outline">Asig: ${esc(App.fmtFecha(a.fecha_asignacion))}</span>
+        <span class="text-label-sm font-semibold ${urgente ? 'text-secondary' : 'text-on-surface'}">${urgente ? '⚠ ' : ''}Límite: ${esc(App.fmtFecha(a.fecha_entrega))}, ${esc(App.fmtHora(a.fecha_entrega))}</span></div></td>
+      <td class="py-3.5 px-4 text-center"><span class="px-2 py-0.5 rounded bg-surface-container-high font-bold text-label-sm text-primary">${esc(a.periodo_codigo || '—')}</span></td>
+      <td class="py-3.5 px-4"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-label-sm font-label-sm border ${ESTILO_ESTADO[a.estado]}">
+        <span class="h-2 w-2 rounded-full" style="background:${BARRA[a.estado]}"></span>${esc(App.ESTADOS[a.estado])}</span></td>
+      <td class="py-3.5 px-4"><div class="flex flex-col gap-1 w-full max-w-[130px]">
+        <div class="flex justify-between text-label-sm font-label-sm"><span class="font-bold text-on-surface">${a.entregas_recibidas} / ${a.estudiantes}</span><span class="text-outline">${pct}%</span></div>
+        <div class="w-full bg-surface-container h-1.5 rounded-full overflow-hidden"><div class="h-full rounded-full" style="width:${pct}%;background:${BARRA[a.estado]}"></div></div></div></td>
+      <td class="py-3.5 px-4 text-right"><div class="flex items-center justify-end gap-1">
+        <button data-editar="${a.id}" title="Editar" class="p-1.5 hover:bg-surface-container-high rounded text-on-surface hover:text-primary"><span class="material-symbols-outlined text-[18px]">edit</span></button>
+        <button data-borrar="${a.id}" title="Eliminar" class="p-1.5 hover:bg-surface-container-high rounded text-outline hover:text-secondary"><span class="material-symbols-outlined text-[18px]">delete</span></button></div></td>
+    </tr>`;
+  }
 
-router.post('/', asyncH(async (req, res) => {
-  const d = actividadSchema.parse(req.body);
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const grupoId = await resolverGrupo(client, d);
-    const ins = await client.query(
-      `INSERT INTO actividades (usuario_id, titulo, ra, area_id, grupo_id, periodo_id, tipo, estado,
-         fecha_asignacion, fecha_entrega, puntos, momento_inicio, momento_desarrollo, momento_cierre,
-         estrategias, recursos, instrumentos, entregas_recibidas)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
-      [req.usuario.id, d.titulo, d.ra, d.area_id, grupoId, d.periodo_id ?? null, d.tipo, d.estado,
-       d.fecha_asignacion, d.fecha_entrega, d.puntos, d.momento_inicio, d.momento_desarrollo, d.momento_cierre,
-       d.estrategias, d.recursos, d.instrumentos, d.entregas_recibidas ?? 0]);
-    await client.query('COMMIT');
-    const { rows } = await pool.query(`${SELECT} WHERE a.id = $1`, [ins.rows[0].id]);
-    res.status(201).json(rows[0]);
-  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
-}));
+  function renderStats(k) {
+    const card = (t, v, color, ic, bg) => `<div class="bg-surface-container-lowest rounded-xl border border-outline-variant p-4 flex items-center justify-between shadow-sm">
+      <div><span class="text-label-sm font-label-sm text-outline block">${t}</span><span class="text-headline-md font-headline-md font-bold" style="color:${color}">${v}</span></div>
+      <div class="w-10 h-10 rounded-lg flex items-center justify-center" style="background:${bg};color:${color}"><span class="material-symbols-outlined">${ic}</span></div></div>`;
+    $('stats-lista').innerHTML = card('Total Registradas', k.total, '#003876', 'assignment', '#EFF6FF') + card('En Curso / Activas', k.en_curso, '#003876', 'timelapse', '#EFF6FF') +
+      card('Próximas a Vencer', k.proximas, '#bb0112', 'alarm', '#FEF2F2') + card('Evaluadas', k.evaluadas, '#059669', 'fact_check', '#ECFDF5');
+  }
 
-router.put('/:id', asyncH(async (req, res) => {
-  const d = actividadSchema.parse(req.body);
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const grupoId = await resolverGrupo(client, d);
-    const upd = await client.query(
-      `UPDATE actividades SET titulo=$1, ra=$2, area_id=$3, grupo_id=$4, periodo_id=$5, tipo=$6, estado=$7,
-         fecha_asignacion=$8, fecha_entrega=$9, puntos=$10, momento_inicio=$11, momento_desarrollo=$12,
-         momento_cierre=$13, estrategias=$14, recursos=$15, instrumentos=$16,
-         entregas_recibidas=COALESCE($17, entregas_recibidas), actualizado_en=now()
-       WHERE id=$18 AND usuario_id=$19 RETURNING id`,
-      [d.titulo, d.ra, d.area_id, grupoId, d.periodo_id ?? null, d.tipo, d.estado, d.fecha_asignacion,
-       d.fecha_entrega, d.puntos, d.momento_inicio, d.momento_desarrollo, d.momento_cierre, d.estrategias,
-       d.recursos, d.instrumentos, d.entregas_recibidas ?? null, req.params.id, req.usuario.id]);
-    await client.query('COMMIT');
-    if (!upd.rows[0]) return res.status(404).json({ error: 'Actividad no encontrada' });
-    const { rows } = await pool.query(`${SELECT} WHERE a.id = $1`, [upd.rows[0].id]);
-    res.json(rows[0]);
-  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
-}));
+  function renderPaginacion(d) {
+    const paginas = Math.max(1, Math.ceil(d.total / d.limit));
+    const desde = d.total ? (d.page - 1) * d.limit + 1 : 0, hasta = Math.min(d.page * d.limit, d.total);
+    const btn = (p, txt, dis, on) => `<button data-page="${p}" ${dis ? 'disabled' : ''} class="px-3 py-1 rounded-lg font-label-md ${on ? 'bg-primary text-on-primary' : 'text-on-surface-variant hover:bg-surface-container-high'} disabled:opacity-40">${txt}</button>`;
+    const nums = []; for (let p = Math.max(1, d.page - 2); p <= Math.min(paginas, d.page + 2); p++) nums.push(btn(p, p, false, p === d.page));
+    $('paginacion').innerHTML = `<div class="flex items-center gap-2 text-body-sm text-on-surface-variant">
+      <span>Mostrando <strong>${desde}-${hasta}</strong> de <strong>${d.total}</strong> actividades</span><span class="text-outline-variant">·</span>
+      <label class="flex items-center gap-1 text-label-sm text-outline">Por página:
+        <select id="por-pagina" class="py-0.5 px-2 border border-outline-variant rounded text-label-sm">${[5, 10, 25, 50].map((n) => `<option ${n === d.limit ? 'selected' : ''}>${n}</option>`).join('')}</select></label></div>
+      <div class="flex items-center space-x-1">${btn(d.page - 1, '‹', d.page <= 1)}${nums.join('')}${btn(d.page + 1, '›', d.page >= paginas)}</div>`;
+    $('por-pagina').addEventListener('change', (e) => { f.limit = +e.target.value; f.page = 1; cargar(); });
+    $('paginacion').querySelectorAll('[data-page]').forEach((b) => b.addEventListener('click', () => { f.page = +b.dataset.page; cargar(); }));
+  }
 
-router.patch('/:id/estado', asyncH(async (req, res) => {
-  const d = z.object({ estado: z.enum(ESTADOS), entregas_recibidas: z.coerce.number().int().min(0).optional() }).parse(req.body);
-  const { rows } = await pool.query(
-    `UPDATE actividades SET estado=$1, entregas_recibidas=COALESCE($2, entregas_recibidas), actualizado_en=now()
-     WHERE id=$3 AND usuario_id=$4 RETURNING id`, [d.estado, d.entregas_recibidas ?? null, req.params.id, req.usuario.id]);
-  if (!rows[0]) return res.status(404).json({ error: 'Actividad no encontrada' });
-  const r = await pool.query(`${SELECT} WHERE a.id = $1`, [rows[0].id]);
-  res.json(r.rows[0]);
-}));
+  async function cargar() {
+    pintarFiltros();
+    try {
+      const d = (ultimo = await App.api('/actividades', { params: { q: f.q, grupo_id: f.grupo_id, periodo_id: f.periodo_id, area_id: f.area_id, tipo: f.tipo, estado: f.estado, page: f.page, limit: f.limit, ...rangoFechas() } }));
+      renderStats(d.kpis);
+      $('tbody-actividades').innerHTML = d.items.length ? d.items.map(fila).join('') :
+        '<tr><td colspan="8" class="py-12 text-center text-outline">No hay actividades con estos filtros. <a href="/actividad-form" class="text-primary font-semibold underline">Crear una actividad</a></td></tr>';
+      const total = Object.values(d.conteos).reduce((a, b) => a + b, 0);
+      document.querySelectorAll('[data-estado]').forEach((b) => {
+        const n = b.dataset.estado === '' ? total : d.conteos[b.dataset.estado];
+        const lbl = b.dataset.estado === '' ? 'Todos' : App.ESTADOS[b.dataset.estado];
+        b.innerHTML = `${lbl} <span class="ml-1 font-bold">${n}</span>`;
+      });
+      document.querySelectorAll('aside a[href="/actividades"] span:last-child').forEach((s) => { if (/^\d+$/.test(s.textContent.trim())) s.textContent = d.kpis.total; });
+      renderPaginacion(d);
+      actualizarSel();
+    } catch (e) { $('tbody-actividades').innerHTML = `<tr><td colspan="8" class="py-10 text-center text-[#BA1A1A]">${esc(e.message)}</td></tr>`; }
+  }
+  function actualizarSel() { $('sel-count').textContent = `${sel.size} seleccionados`; }
 
-router.delete('/:id', asyncH(async (req, res) => {
-  const r = await pool.query('DELETE FROM actividades WHERE id=$1 AND usuario_id=$2', [req.params.id, req.usuario.id]);
-  if (!r.rowCount) return res.status(404).json({ error: 'Actividad no encontrada' });
-  res.status(204).end();
-}));
-
-module.exports = router;
+  // Eventos
+  let t; $('f-q').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { f.q = e.target.value.trim(); f.page = 1; cargar(); }, 300); });
+  $('f-grupo').addEventListener('change', (e) => { f.grupo_id = e.target.value; f.page = 1; cargar(); });
+  $('f-periodo').addEventListener('change', (e) => { f.periodo_id = e.target.value; f.page = 1; cargar(); });
+  $('f-areas').addEventListener('click', (e) => { const b = e.target.closest('[data-area]'); if (b) { f.area_id = b.dataset.area; f.page = 1; cargar(); } });
+  document.querySelectorAll('[data-tipo]').forEach((b) => b.addEventListener('click', () => { f.tipo = b.dataset.tipo; f.page = 1; cargar(); }));
+  document.querySelectorAll('[data-rango]').forEach((b) => b.addEventListener('click', () => { f.rango = b.dataset.rango; f.page = 1; cargar(); }));
+  document.querySelectorAll('[data-estado]').forEach((b) => b.addEventListener('click', () => { f.estado = b.dataset.estado; f.page = 1; cargar(); }));
+  $('f-reset').addEventListener('click', () => { Object.assign(f, { q: '', grupo_id: '', periodo_id: '', area_id: '', tipo: '', estado: '', rango: 'todo', page: 1 }); $('f-q').value = ''; $('f-grupo').value = ''; $('f-periodo').value = ''; cargar(); });
+  $('btn-nueva').addEventListener('click', () => (location.href = '/actividad-form'));
+  $('chk-todos').addEventListener('change', (e) => { (ultimo?.items || []).forEach((a) => (e.target.checked ? sel.add(a.id) : sel.delete(a.id))); document.querySelectorAll('#tbody-actividades input[type=checkbox]').forEach((c) => (c.checked = e.target.checked)); actualizarSel(); });
+  $('tbody-actividades').addEventListener('click', async (e) => {
+    const chk = e.target.closest('input[data-id]'); if (chk) { chk.checked ? sel.add(+chk.dataset.id) : sel.delete(+chk.dataset.id); actualizarSel(); return; }
+    const ed = e.target.closest('[data-editar]'); if (ed) location.href = '/actividad-form?id=' + ed.dataset.editar;
+    const bo = e.target.closest('[data-borrar]');
+    if (bo && confirm('¿Eliminar esta actividad? Esta acción no se puede deshacer.')) {
+      try { await App.api('/actividades/' + bo.dataset.borrar, { method: 'DELETE' }); sel.delete(+bo.dataset.borrar); App.toast('Actividad eliminada'); cargar(); } catch (er) { App.toast(er.message, 'error'); }
+    }
+  });
+  $('btn-revisadas').addEventListener('click', async () => {
+    if (!sel.size) return App.toast('Seleccione al menos una actividad', 'error');
+    try { await Promise.all([...sel].map((id) => App.api(`/actividades/${id}/estado`, { method: 'PATCH', body: { estado: 'evaluada' } }))); sel.clear(); App.toast('Actividades marcadas como evaluadas'); cargar(); } catch (er) { App.toast(er.message, 'error'); }
+  });
+  $('btn-exportar').addEventListener('click', async () => {
+    const d = await App.api('/actividades', { params: { q: f.q, grupo_id: f.grupo_id, periodo_id: f.periodo_id, area_id: f.area_id, tipo: f.tipo, estado: f.estado, limit: 100, ...rangoFechas() } });
+    const celda = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const filas = [['Título', 'RA', 'Área', 'Grado', 'Sección', 'Tipo', 'Estado', 'Asignación', 'Entrega', 'Puntos'], ...d.items.map((a) => [a.titulo, a.ra, a.area, a.grado, a.seccion, App.TIPOS[a.tipo], App.ESTADOS[a.estado], a.fecha_asignacion, a.fecha_entrega, a.puntos])];
+    const blob = new Blob(['\ufeff' + filas.map((r) => r.map(celda).join(',')).join('\n')], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'actividades.csv'; a.click(); URL.revokeObjectURL(a.href);
+  });
+  document.addEventListener('evento-creado', () => {});
+  cargar();
+})();
