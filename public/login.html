@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full">
+<head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Calendario Académico RD — Acceso</title>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>body{font-family:'Plus Jakarta Sans',sans-serif;background:#f9f9ff;color:#111c2d}</style>
+</head>
+<body class="min-h-full flex items-center justify-center p-4">
+  <main class="w-full max-w-md bg-white border border-[#c3c6d2] rounded-xl p-8" style="box-shadow:0 4px 6px -1px rgba(0,56,118,.07)">
+    <div class="flex items-center gap-3 mb-6">
+      <div class="w-11 h-11 rounded-lg bg-[#003876] text-white flex items-center justify-center"><span class="material-symbols-outlined">school</span></div>
+      <div><h1 class="text-xl font-bold text-[#00234e] leading-tight">Calendario Académico RD</h1><p class="text-xs text-[#737781] tracking-wide">GESTOR DE ACTIVIDADES DOCENTES</p></div>
+    </div>
+    <div class="inline-flex rounded-lg bg-[#e7eeff] p-1 text-sm font-semibold mb-5" role="tablist">
+      <button id="tab-login" type="button" class="px-4 py-1.5 rounded bg-white text-[#003876] shadow-sm">Iniciar sesión</button>
+      <button id="tab-registro" type="button" class="px-4 py-1.5 rounded text-[#434750]">Crear cuenta</button>
+    </div>
+    <form id="form" class="space-y-4" novalidate>
+      <label id="l-nombre" class="hidden block text-sm font-semibold">Nombre completo
+        <input id="nombre" autocomplete="name" class="mt-1 w-full border border-[#c3c6d2] rounded-lg px-3 py-2 font-normal"/></label>
+      <label class="block text-sm font-semibold">Correo electrónico
+        <input id="email" type="email" autocomplete="email" required class="mt-1 w-full border border-[#c3c6d2] rounded-lg px-3 py-2 font-normal"/></label>
+      <label class="block text-sm font-semibold">Contraseña
+        <input id="password" type="password" autocomplete="current-password" required minlength="8" class="mt-1 w-full border border-[#c3c6d2] rounded-lg px-3 py-2 font-normal"/></label>
+      <label id="l-distrito" class="hidden block text-sm font-semibold">Distrito / centro educativo (opcional)
+        <input id="distrito" placeholder="Ej. Distrito Educativo 10-01" class="mt-1 w-full border border-[#c3c6d2] rounded-lg px-3 py-2 font-normal"/></label>
+      <p id="error" role="alert" class="hidden text-sm text-[#BA1A1A]"></p>
+      <button id="enviar" type="submit" class="w-full py-2.5 rounded-lg bg-[#003876] text-white font-semibold hover:bg-[#00234e]">Entrar</button>
+    </form>
+  </main>
+<script>
+(function(){
+  const $=(i)=>document.getElementById(i); let registro=false;
+  if(localStorage.getItem('cal_token')) location.replace('/dashboard');
+  function modo(r){registro=r;
+    $('l-nombre').classList.toggle('hidden',!r);$('l-distrito').classList.toggle('hidden',!r);
+    $('enviar').textContent=r?'Crear cuenta':'Entrar';
+    $('password').autocomplete=r?'new-password':'current-password';
+    $('tab-login').className='px-4 py-1.5 rounded '+(r?'text-[#434750]':'bg-white text-[#003876] shadow-sm');
+    $('tab-registro').className='px-4 py-1.5 rounded '+(r?'bg-white text-[#003876] shadow-sm':'text-[#434750]');
+    $('error').classList.add('hidden');}
+  $('tab-login').onclick=()=>modo(false); $('tab-registro').onclick=()=>modo(true);
+  $('form').addEventListener('submit',async(e)=>{e.preventDefault();
+    const err=$('error'); err.classList.add('hidden'); $('enviar').disabled=true;
+    const body={email:$('email').value,password:$('password').value};
+    if(registro){body.nombre=$('nombre').value; if($('distrito').value) body.distrito=$('distrito').value;}
+    try{
+      const res=await fetch('/api/auth/'+(registro?'register':'login'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const d=await res.json().catch(()=>({}));
+      if(!res.ok) throw new Error(d.detalles?d.detalles.map(x=>x.mensaje).join('. '):(d.error||'Error'));
+      localStorage.setItem('cal_token',d.token); localStorage.setItem('cal_user',JSON.stringify(d.usuario));
+      location.href='/dashboard';
+    }catch(ex){err.textContent=ex.message;err.classList.remove('hidden');$('enviar').disabled=false;}
+  });
+})();
+</script>
+</body></html>
